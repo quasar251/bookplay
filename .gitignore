@@ -63,6 +63,26 @@ $RECYCLE.BIN/
 coverage/
 .nyc_output/
 
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+.python-version
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.pytest_cache/
+*.egg-info/
+build/
+dist/
+
 # Misc
 *.bak
 *.tmp
