@@ -1,6 +1,61 @@
-import { user, achievements, skillTree, userProfile } from '../data/mockData';
+import { useEffect, useState } from 'react';
+import api from '../api/client';
 
 export default function Profile() {
+  const [profile, setProfile] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [reloadKey, setReloadKey] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      setLoading(true);
+      setError('');
+      try {
+        const data = await api.profile();
+        if (!cancelled) setProfile(data);
+      } catch (e) {
+        if (!cancelled) setError(e.message || '加载个人资料失败');
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadKey]);
+
+  if (loading) {
+    return (
+      <div className="p-8 max-w-5xl mx-auto">
+        <div className="bg-white rounded-3xl border border-slate-100 shadow-sm p-16 flex flex-col items-center justify-center text-slate-400">
+          <div className="inline-block w-8 h-8 border-4 border-slate-200 border-t-violet-500 rounded-full animate-spin mb-3" />
+          <div className="text-sm">正在读取个人档案...</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (error || !profile) {
+    return (
+      <div className="p-8 max-w-5xl mx-auto">
+        <div className="bg-white rounded-3xl border border-slate-100 shadow-sm p-12 text-center">
+          <div className="text-4xl mb-3 opacity-30">🛰️</div>
+          <p className="text-slate-500 text-sm">个人资料暂时无法访问</p>
+          <p className="text-xs text-red-400 mt-1">{error}</p>
+          <button
+            onClick={() => setReloadKey(k => k + 1)}
+            className="mt-4 px-5 py-2 bg-gradient-to-r from-violet-500 to-pink-500 text-white rounded-xl text-sm font-medium hover:shadow-lg transition-all"
+          >
+            重试
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const { user, userProfile, achievements, skillTree } = profile;
   const xpPercent = (user.currentLevelXp / 100) * 100;
 
   return (
@@ -150,7 +205,7 @@ export default function Profile() {
           <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-5">
             <h3 className="font-bold text-slate-800 text-sm mb-3">❤️ 偏好主题</h3>
             <div className="flex flex-wrap gap-1.5">
-              {userProfile.preferredTopics.map((topic, i) => (
+              {(userProfile.preferredTopics || []).map((topic, i) => (
                 <span
                   key={i}
                   className="text-xs px-2.5 py-1 bg-gradient-to-r from-pink-50 to-violet-50 text-violet-600 rounded-full font-medium border border-violet-100"

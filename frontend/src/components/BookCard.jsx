@@ -2,9 +2,13 @@ import { useNavigate } from 'react-router-dom';
 
 export default function BookCard({ book }) {
   const navigate = useNavigate();
-  const progress = (book.completedChapters / book.totalChapters) * 100;
+  const totalChapters = book.totalChapters || 0;
+  const progress = totalChapters ? (book.completedChapters / totalChapters) * 100 : 0;
   const isCompleted = book.status === 'completed';
   const isNotStarted = book.status === 'not_started';
+  const genStatus = book.generation?.status;
+  const isGenerating = genStatus === 'in_progress';
+  const genFailed = genStatus === 'failed';
 
   const difficultyLabel = {
     easy: '简单',
@@ -26,12 +30,22 @@ export default function BookCard({ book }) {
       {/* 封面区 */}
       <div className={`h-32 bg-gradient-to-br ${book.coverColor} flex items-center justify-center relative`}>
         <span className="text-5xl">{book.cover}</span>
-        {isCompleted && (
+        {isGenerating && (
+          <div className="absolute top-2 right-2 bg-white/90 backdrop-blur px-2 py-0.5 rounded-full text-xs font-medium text-sky-600">
+            ⚙️ 生成中…
+          </div>
+        )}
+        {!isGenerating && genFailed && (
+          <div className="absolute top-2 right-2 bg-white/90 backdrop-blur px-2 py-0.5 rounded-full text-xs font-medium text-rose-600">
+            生成失败
+          </div>
+        )}
+        {!isGenerating && !genFailed && isCompleted && (
           <div className="absolute top-2 right-2 bg-white/90 backdrop-blur px-2 py-0.5 rounded-full text-xs font-medium text-emerald-600">
             ✓ 已通关
           </div>
         )}
-        {isNotStarted && (
+        {!isGenerating && !genFailed && isNotStarted && (
           <div className="absolute top-2 right-2 bg-white/90 backdrop-blur px-2 py-0.5 rounded-full text-xs font-medium text-slate-500">
             待开始
           </div>
@@ -51,7 +65,7 @@ export default function BookCard({ book }) {
         <p className="text-xs text-slate-400 mt-2 line-clamp-2 h-8">{book.description}</p>
 
         {/* 进度条 */}
-        {!isNotStarted && (
+        {!isNotStarted && totalChapters > 0 && (
           <div className="mt-3">
             <div className="flex justify-between text-[11px] text-slate-500 mb-1">
               <span>{book.completedChapters} / {book.totalChapters} 章</span>

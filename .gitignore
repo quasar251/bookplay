@@ -87,3 +87,5 @@ dist/
 *.bak
 *.tmp
 *.temp
+backend/.env.example
+.env

@@ -13,3 +13,6 @@ langchain-openai==0.2.14
 # LangGraph（Phase 2b）
 langgraph==0.3.34
 langgraph-checkpoint==2.1.2
+
+# RAG / 向量检索（Phase 3：NPC 对话引用原文）
+chromadb==1.5.9

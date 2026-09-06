@@ -1,25 +1,180 @@
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
+import api from '../api/client';
 import { chapterData, calculateIdentity } from '../data/gameData';
+
+const TEACH_GRADIENT = 'from-sky-400 to-indigo-500';
+const CARD_GRADIENTS = [
+  'from-violet-500 to-purple-600',
+  'from-sky-500 to-blue-600',
+  'from-emerald-500 to-teal-600',
+  'from-rose-500 to-pink-600',
+  'from-amber-500 to-orange-600',
+];
+
+// 把后端 game JSON 转成 GameEngine 所需的 chapterData 步骤数组：
+// 每章每个 scene 展开为 teach → scenario → reflection → card 四个 step。
+// 字段对齐 gameData.js 中 mock chapterData 的既有 schema。
+function buildStepsFromGame(game) {
+  if (!game || !Array.isArray(game.chapters)) return [];
+  const steps = [];
+  let cardIdx = 0;
+
+  game.chapters.forEach(chapter => {
+    const chapterId = chapter.chapter_id ?? '';
+    const chapterHook = chapter.chapter_hook || '';
+    const scenes = Array.isArray(chapter.scenes) ? chapter.scenes : [];
+
+    scenes.forEach((scene, si) => {
+      const concept =
+        scene.concept_name || scene.card?.source_concept || `概念 ${chapterId}-${si + 1}`;
+      const prefix = `${chapterId}-${si}`;
+      const learning = scene.learning || {};
+      const scenario = scene.scenario || {};
+      const reflection = scene.reflection || {};
+      const card = scene.card || {};
+
+      // teach：学习阶段
+      if (learning.dialogue || learning.key_idea) {
+        steps.push({
+          id: `${prefix}-teach`,
+          type: 'teach',
+          title: concept,
+          teachPhase: {
+            speaker: learning.speaker || '讲解者',
+            avatar: '📖',
+            gradient: TEACH_GRADIENT,
+            dialogue: learning.dialogue || '',
+            keyIdea: learning.key_idea || '',
+            // hook：优先场景钩子，否则取本章 chapter_hook（每章只展示一次）
+            hook: si === 0 ? scene.hook || chapterHook : scene.hook || '',
+          },
+        });
+      }
+
+      // scenario：情境决策
+      const options = (Array.isArray(scenario.options) ? scenario.options : [])
+        .filter(o => o && typeof o === 'object')
+        .map((o, i) => ({
+          id: o.id ?? String.fromCharCode(65 + i),
+          label: o.label ?? '',
+          text: o.text ?? '',
+          cost: o.cost ?? '',
+          consequence: o.consequence ?? '',
+          correct: Boolean(o.correct),
+        }));
+      if (options.length > 0) {
+        steps.push({
+          id: `${prefix}-scenario`,
+          type: 'scenario',
+          title: scenario.title || concept,
+          scenario: {
+            description: scenario.description || '',
+            options,
+          },
+        });
+      }
+
+      // reflection：反思内化
+      if (reflection.prompt) {
+        steps.push({
+          id: `${prefix}-reflection`,
+          type: 'reflection',
+          title: concept,
+          reflection: {
+            prompt: reflection.prompt,
+            type: reflection.type || 'text',
+            followUp: reflection.followUp || '',
+            examples: Array.isArray(reflection.examples) ? reflection.examples : undefined,
+          },
+        });
+      }
+
+      // card：收获卡牌
+      if (card.name || card.definition) {
+        steps.push({
+          id: `${prefix}-card`,
+          type: 'card',
+          card: {
+            icon: card.icon || '🃏',
+            name: card.name || concept,
+            definition: card.definition || card.name || '',
+            example: card.example || '',
+            counterExample: card.counter_example || card.counterExample || '',
+            tags: Array.isArray(card.tags) ? card.tags : [],
+            gradient: card.gradient || CARD_GRADIENTS[cardIdx % CARD_GRADIENTS.length],
+          },
+        });
+        cardIdx += 1;
+      }
+    });
+  });
+
+  return steps;
+}
 
 export default function GameEngine() {
   const { bookId } = useParams();
   const navigate = useNavigate();
+  const [steps, setSteps] = useState(() => (bookId ? null : chapterData));
+  const [gameLoading, setGameLoading] = useState(() => Boolean(bookId));
+  const [loadFailed, setLoadFailed] = useState(false);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [choices, setChoices] = useState([]);
   const [showResult, setShowResult] = useState(false);
-  const [reflectionInput, setReflectionInput] = useState('');
   const [collectedCards, setCollectedCards] = useState(new Set());
   const [cardRevealed, setCardRevealed] = useState(false);
   const [exitConfirm, setExitConfirm] = useState(false);
 
-  const currentChapter = chapterData[currentIndex];
-  const isLast = currentIndex >= chapterData.length - 1;
+  const resetProgress = () => {
+    setCurrentIndex(0);
+    setChoices([]);
+    setShowResult(false);
+    setCollectedCards(new Set());
+    setCardRevealed(false);
+    setExitConfirm(false);
+  };
+
+  // 有 bookId：优先加载真实 game 数据；无 bookId / 加载失败 → mock 兜底
+  useEffect(() => {
+    if (!bookId) return undefined;
+    let cancelled = false;
+    api.getBookGame(bookId)
+      .then(res => {
+        if (cancelled) return;
+        const built = buildStepsFromGame(res?.game);
+        if (built.length > 0) {
+          setSteps(built);
+          setLoadFailed(false);
+        } else {
+          setSteps(chapterData);
+          setLoadFailed(true);
+        }
+        resetProgress();
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setSteps(chapterData);
+        setLoadFailed(true);
+        resetProgress();
+      })
+      .finally(() => {
+        if (!cancelled) setGameLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bookId]);
+
+  const activeSteps = steps ?? [];
+  const currentChapter = activeSteps[currentIndex];
+  const isLast = currentIndex >= activeSteps.length - 1;
   const identity = calculateIdentity(choices);
 
   // 自动收集卡牌
   useEffect(() => {
-    if (currentChapter.type === 'card') {
+    if (currentChapter?.type === 'card') {
       setCollectedCards(prev => new Set([...prev, currentChapter.id]));
       setTimeout(() => setCardRevealed(true), 500);
     }
@@ -27,12 +182,7 @@ export default function GameEngine() {
 
   // 进入反思阶段
   const handleScenarioComplete = (choiceId) => {
-    const option = currentChapter.scenario.options.find(o => o.id === choiceId);
     setChoices([...choices, choiceId]);
-    
-    if (!option.correct) {
-      // 错误答案也推进（非虚构不惩罚，只是引导）
-    }
     nextPhase();
   };
 
@@ -56,12 +206,23 @@ export default function GameEngine() {
     setExitConfirm(false);
   };
 
+  if (gameLoading) {
+    return (
+      <div className="h-full flex items-center justify-center">
+        <div className="text-center text-slate-400">
+          <div className="text-4xl mb-3 animate-pulse">📖</div>
+          <div className="text-sm">正在加载沉浸式副本…</div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="h-full flex flex-col">
       {/* 顶部进度条 + 退出按钮 */}
-      <GameProgressBar 
-        total={chapterData.length} 
-        current={currentIndex + 1} 
+      <GameProgressBar
+        total={activeSteps.length}
+        current={currentIndex + 1}
         collectedCards={collectedCards.size}
         onExit={handleExit}
       />
@@ -69,19 +230,25 @@ export default function GameEngine() {
       {/* 主内容区 */}
       <div className="flex-1 overflow-y-auto p-6 md:p-8">
         <div className="max-w-3xl mx-auto">
+          {loadFailed && (
+            <div className="mb-4 px-4 py-2 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-600">
+              ⚠️ 真实副本内容暂不可用，已切换到示例内容演示。
+            </div>
+          )}
+
           {/* 阶段指示器 */}
-          <PhaseIndicator type={currentChapter.type} />
+          <PhaseIndicator type={currentChapter?.type} />
 
           {/* 根据类型渲染不同阶段 */}
-          {currentChapter.type === 'teach' && (
-            <LearnPhase 
-              data={currentChapter.teachPhase} 
+          {currentChapter?.type === 'teach' && (
+            <LearnPhase
+              data={currentChapter.teachPhase}
               onNext={nextPhase}
               hook={currentChapter.teachPhase.hook}
             />
           )}
 
-          {currentChapter.type === 'scenario' && (
+          {currentChapter?.type === 'scenario' && (
             <PracticePhase
               scenario={currentChapter.scenario}
               title={currentChapter.title}
@@ -89,7 +256,7 @@ export default function GameEngine() {
             />
           )}
 
-          {currentChapter.type === 'reflection' && (
+          {currentChapter?.type === 'reflection' && (
             <UsePhase
               reflection={currentChapter.reflection}
               title={currentChapter.title}
@@ -97,7 +264,7 @@ export default function GameEngine() {
             />
           )}
 
-          {currentChapter.type === 'card' && (
+          {currentChapter?.type === 'card' && (
             <CardPhase
               card={currentChapter.card}
               revealed={cardRevealed}
@@ -115,7 +282,7 @@ export default function GameEngine() {
 
       {/* 身份结果页 */}
       {showResult && (
-        <IdentityResult 
+        <IdentityResult
           identity={identity}
           choices={choices}
           collectedCards={collectedCards.size}
@@ -126,7 +293,7 @@ export default function GameEngine() {
       {/* 退出确认弹窗 */}
       {exitConfirm && (
         <ExitConfirmModal
-          progress={`${Math.round((currentIndex / chapterData.length) * 100)}%`}
+          progress={`${Math.round((currentIndex / activeSteps.length) * 100)}%`}
           onConfirm={confirmExit}
           onCancel={cancelExit}
         />
@@ -207,7 +374,7 @@ function PracticePhase({ scenario, title, onChoose }) {
 
       {/* 三选一 */}
       <div className="space-y-3">
-        {scenario.options.map((option, index) => (
+        {scenario.options.map(option => (
           <ScenarioOption
             key={option.id}
             option={option}
@@ -221,16 +388,16 @@ function PracticePhase({ scenario, title, onChoose }) {
       {/* 选择后的反馈区 */}
       {revealed && selectedOption && (
         <div className={`rounded-2xl p-6 border-2 ${
-          selectedOption.correct 
-            ? 'border-emerald-300 bg-emerald-50' 
-            : selectedOption.label === '身份驱动' 
+          selectedOption.correct
+            ? 'border-emerald-300 bg-emerald-50'
+            : selectedOption.label === '身份驱动'
               ? 'border-sky-300 bg-sky-50'
               : 'border-amber-300 bg-amber-50'
         }`}>
           <div className="flex items-center gap-2 mb-3">
             <span className={`px-2 py-1 rounded-lg text-xs font-semibold ${
-              selectedOption.correct 
-                ? 'bg-emerald-200 text-emerald-700' 
+              selectedOption.correct
+                ? 'bg-emerald-200 text-emerald-700'
                 : 'bg-amber-200 text-amber-700'
             }`}>
               {selectedOption.correct ? '✅ 最优解' : `← ${selectedOption.label}`}
@@ -286,7 +453,7 @@ function ScenarioOption({ option, isSelected, isRevealed, onClick }) {
 
         <div className="flex-1">
           <p className="text-sm text-slate-800 mb-2 leading-relaxed">{option.text}</p>
-          
+
           {isRevealed && isSelected && (
             <div className="text-xs text-slate-500">
               📝 {option.cost}
@@ -313,7 +480,7 @@ function UsePhase({ reflection, title, onSubmit }) {
         <label className="block text-sm font-semibold text-slate-700 mb-3">
           {reflection.prompt}
         </label>
-        
+
         <textarea
           value=""
           readOnly
@@ -421,7 +588,7 @@ function CardPhase({ card, revealed, onNext }) {
 
 function IdentityResult({ identity, choices, collectedCards, onClose }) {
   const topTrait = Object.entries(identity.scores).sort((a, b) => b[1] - a[1])[0];
-  
+
   const traitLabels = {
     actionOriented: '⚡ 行动派',
     deepThinker: '🧠 深思者',
@@ -451,9 +618,9 @@ function IdentityResult({ identity, choices, collectedCards, onClose }) {
         <div className="bg-gradient-to-br from-violet-50 to-purple-50 rounded-2xl p-6 text-center mb-6">
           <div className="text-3xl mb-3">{traitLabels[topTrait[0]]}</div>
           <p className="text-sm text-slate-600">
-            你是一个{topTrait[0] === 'identityFocused' ? '善于从内在重塑自我' : 
-                     topTrait[0] === 'actionOriented' ? '相信先做了再说' : 
-                     topTrait[0] === 'deepThinker' ? '倾向于深入分析再决定' : 
+            你是一个{topTrait[0] === 'identityFocused' ? '善于从内在重塑自我' :
+                     topTrait[0] === 'actionOriented' ? '相信先做了再说' :
+                     topTrait[0] === 'deepThinker' ? '倾向于深入分析再决定' :
                      '在复杂中寻找平衡'}的人。
           </p>
         </div>
@@ -528,13 +695,13 @@ function GameProgressBar({ total, current, collectedCards, onExit }) {
         {/* 进度条（弹性占满剩余空间） */}
         <div className="flex-1 flex items-center gap-3 ml-4">
           <div className="text-xs text-slate-500 min-w-[40px]">
-            {current}/{total}
+            {Math.min(current, total)}/{total}
           </div>
           <div className="flex-1">
             <div className="h-1.5 bg-slate-100 rounded-full overflow-hidden">
               <div
                 className="h-full bg-gradient-to-r from-sky-400 to-violet-500 rounded-full transition-all duration-300"
-                style={{ width: `${percent}%` }}
+                style={{ width: `${Math.max(0, Math.min(percent, 100))}%` }}
               />
             </div>
           </div>

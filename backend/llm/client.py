@@ -15,9 +15,9 @@ Agent 层通过 `get_llm_client()` 获取实例，调用：
 
 from typing import Optional, Type
 
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.output_parsers import PydanticOutputParser
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnableLambda
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel, ValidationError
 
@@ -55,7 +55,11 @@ class LLMClient:
         )
 
     def _build_chain(self, system_prompt: str):
-        """构建 LCEL 链：prompt | model
+        """构建 LCEL 链：messages → model
+
+        用 RunnableLambda 直接构造 message 列表而不是 ChatPromptTemplate，
+        避免 system prompt 中的 JSON 模板大括号（如输出格式示例）
+        被当作模板字段二次解析（会导致嵌套占位符报错）。
 
         Args:
             system_prompt: 系统提示词
@@ -63,12 +67,14 @@ class LLMClient:
         Returns:
             可 ainvoke 的 Runnable，输入 {"input": str}，输出 AIMessage
         """
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", system_prompt),
-            ("human", "{input}"),
-        ])
-        # 组装成链：输入 dict({"input": ...}) → AIMessage
-        return prompt | self._model
+
+        def to_messages(payload: dict):
+            return [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=payload["input"]),
+            ]
+
+        return RunnableLambda(to_messages) | self._model
 
     async def invoke_text(
         self,

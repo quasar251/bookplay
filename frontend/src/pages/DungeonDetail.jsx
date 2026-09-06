@@ -1,48 +1,220 @@
+import { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { books, chapters, quotes, npcs } from '../data/mockData';
-import { useState } from 'react';
+import { useData } from '../api/DataContext';
+import api from '../api/client';
+
+const STAGE_LABEL = {
+  pending: '等待中',
+  running: '生成中',
+  completed: '已完成',
+  failed: '失败',
+};
+
+const STAGE_COLOR = {
+  pending: 'bg-slate-200',
+  running: 'bg-sky-500',
+  completed: 'bg-emerald-500',
+  failed: 'bg-rose-500',
+};
 
 export default function DungeonDetail() {
   const { bookId } = useParams();
   const navigate = useNavigate();
+  const { bootstrap, refresh } = useData();
+  const npcs = bootstrap?.npcs ?? [];
   const [activeTab, setActiveTab] = useState('chapters');
 
-  const book = books.find(b => b.id === bookId);
-  const chapterList = chapters[bookId] || [];
-  const quoteList = quotes[bookId] || [];
-  const npc = book?.npcId ? npcs.find(n => n.id === book.npcId) : null;
+  // 详情数据（api.getBook）
+  const [detail, setDetail] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
-  if (!book) {
+  // "用本书内容生成"弹窗
+  const [showGenModal, setShowGenModal] = useState(false);
+  const [genTitle, setGenTitle] = useState('');
+  const [genType, setGenType] = useState('non_fiction');
+  const [genText, setGenText] = useState('');
+  const [genFormError, setGenFormError] = useState('');
+  const [genSubmitting, setGenSubmitting] = useState(false);
+  const [genTask, setGenTask] = useState(null); // { taskId }
+  const [genTaskState, setGenTaskState] = useState(null);
+  const [genTaskError, setGenTaskError] = useState('');
+
+  // 进入时拉取书籍详情
+  useEffect(() => {
+    let cancelled = false;
+    api.getBook(bookId)
+      .then(data => {
+        if (cancelled) return;
+        setDetail(data);
+        setLoading(false);
+      })
+      .catch(e => {
+        if (cancelled) return;
+        setError(e?.message || '加载书籍失败');
+        setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [bookId]);
+
+  const book = detail?.book ?? null;
+  const chapterList = detail?.chapters ?? [];
+  const quoteList = detail?.quotes ?? [];
+  const hasGame = !!detail?.has_game;
+  const generation = book?.generation;
+  const genInProgress = !!generation && generation.status === 'in_progress' && !hasGame;
+
+  // 生成中：每 2 秒轮询详情，直到 has_game
+  useEffect(() => {
+    if (!genInProgress || !bookId) return undefined;
+    const timer = setInterval(() => {
+      api.getBook(bookId)
+        .then(data => setDetail(data))
+        .catch(() => {
+          // 瞬时错误忽略，继续轮询
+        });
+    }, 2000);
+    return () => clearInterval(timer);
+  }, [bookId, genInProgress]);
+
+  // 生成任务轮询（"用本书内容生成"提交后）
+  useEffect(() => {
+    if (!genTask) return undefined;
+    let cancelled = false;
+    let timer = null;
+
+    const poll = async () => {
+      let snapshot;
+      try {
+        snapshot = await api.getTask(genTask.taskId);
+      } catch (e) {
+        if (cancelled) return;
+        setGenTaskError(e?.message || '查询生成进度失败，正在重试…');
+        timer = setTimeout(poll, 2000);
+        return;
+      }
+      if (cancelled) return;
+
+      setGenTaskState(snapshot);
+      if (snapshot.status === 'success') {
+        setGenTaskError('');
+        refresh();
+        // 刷新详情，让"进入副本"入口出现
+        api.getBook(bookId)
+          .then(data => setDetail(data))
+          .catch(() => {});
+        setShowGenModal(false);
+      } else if (snapshot.status === 'failed') {
+        setGenTaskError(snapshot.message || snapshot.error || '生成失败，请稍后重试');
+      } else {
+        timer = setTimeout(poll, 2000);
+      }
+    };
+
+    poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [bookId, genTask, refresh]);
+
+  // ---------- 渲染 ----------
+
+  if (loading) {
     return (
-      <div className="p-8 text-center text-slate-500">
-        未找到该副本
+      <div className="p-8 max-w-5xl mx-auto">
+        <div className="flex flex-col items-center justify-center py-40 text-slate-400">
+          <div className="text-4xl mb-3 animate-pulse">📚</div>
+          <div className="text-sm">副本加载中…</div>
+        </div>
       </div>
     );
   }
 
-  const progress = (book.completedChapters / book.totalChapters) * 100;
+  if (!book) {
+    return (
+      <div className="p-8 max-w-5xl mx-auto">
+        <div className="bg-white rounded-2xl border border-slate-100 shadow-sm p-10 text-center">
+          <div className="text-4xl mb-3">🧭</div>
+          <p className="text-slate-600 font-medium">未找到该副本</p>
+          <p className="text-sm text-slate-400 mt-1 mb-5">{error}</p>
+          <button
+            onClick={() => navigate('/')}
+            className="px-6 py-2.5 bg-gradient-to-r from-sky-500 to-violet-500 text-white rounded-xl text-sm font-medium hover:shadow-lg transition-all"
+          >
+            ← 返回副本大厅
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const totalChapters = book.totalChapters || 0;
+  const progress = totalChapters ? (book.completedChapters / totalChapters) * 100 : 0;
   const isCompleted = book.status === 'completed';
-  const isInProgress = book.status === 'in_progress';
-  const isNotStarted = book.status === 'not_started';
+  const npc = book.npcId ? npcs.find(n => n.id === book.npcId) : null;
 
   // 从章节中提取概念
   const allConcepts = chapterList
     .filter(c => c.concepts?.length)
     .flatMap(c => c.concepts);
 
-  // 获取游戏进度（模拟）
-  const getGameStatus = () => {
-    if (isCompleted) return 'done';
-    if (isInProgress && chapterList.length > 0) {
-      const completedChapters = chapterList.filter(c => c.completed).length;
-      if (completedChapters === 0) return 'not-started';
-      if (completedChapters < chapterList.length) return 'in-progress';
-      return 'done';
-    }
-    return 'not-started';
+  const openGenModal = () => {
+    setGenTitle(book?.title || '');
+    setGenType('non_fiction');
+    setGenText('');
+    setGenFormError('');
+    setGenSubmitting(false);
+    setGenTask(null);
+    setGenTaskState(null);
+    setGenTaskError('');
+    setShowGenModal(true);
   };
 
-  const gameStatus = getGameStatus();
+  const closeGenModal = () => {
+    setShowGenModal(false);
+    setGenTitle('');
+    setGenText('');
+    setGenType('non_fiction');
+    setGenFormError('');
+    setGenSubmitting(false);
+    setGenTask(null);
+    setGenTaskState(null);
+    setGenTaskError('');
+  };
+
+  const handleStartGenerate = async () => {
+    if (genSubmitting) return;
+    const trimmedTitle = genTitle.trim();
+    const trimmedText = genText.trim();
+    if (!trimmedTitle) {
+      setGenFormError('请填写书名');
+      return;
+    }
+    if (trimmedText.length < 100) {
+      setGenFormError(`正文至少需要 100 字，当前已输入 ${trimmedText.length} 字`);
+      return;
+    }
+    setGenFormError('');
+    setGenSubmitting(true);
+    setGenTaskError('');
+    try {
+      const data = await api.generateExisting(bookId, {
+        book_title: trimmedTitle,
+        book_text: trimmedText,
+        book_type: genType,
+        max_scenes: 3,
+      });
+      setGenTask({ taskId: data.task_id });
+    } catch (e) {
+      setGenFormError(e?.message || '提交失败，请稍后重试');
+      setGenSubmitting(false);
+    }
+  };
+
+  const isGenTaskRunning = !!genTask && (!genTaskState || (genTaskState.status !== 'failed' && genTaskState.status !== 'success'));
 
   return (
     <div className="p-8 max-w-5xl mx-auto">
@@ -60,16 +232,21 @@ export default function DungeonDetail() {
           {/* 封面 */}
           <div className={`w-32 h-44 rounded-xl bg-gradient-to-br ${book.coverColor} flex items-center justify-center text-6xl shadow-lg shrink-0 relative overflow-hidden`}>
             {book.cover}
-            
-            {/* 游戏状态标记 */}
-            {gameStatus !== 'done' && (
-              <div className="absolute top-2 right-2 bg-black/50 backdrop-blur-sm px-2 py-1 rounded-lg text-xs text-white">
-                {gameStatus === 'in-progress' ? '🎮 进行中' : ' 待解锁'}
+
+            {/* 生成 / 可玩状态标记 */}
+            {hasGame && (
+              <div className="absolute top-2 right-2 bg-emerald-500/90 px-2 py-1 rounded-lg text-xs text-white">
+                ✓ 可进入副本
               </div>
             )}
-            {gameStatus === 'done' && (
-              <div className="absolute top-2 right-2 bg-emerald-500/90 px-2 py-1 rounded-lg text-xs text-white">
-                ✓ 已完成
+            {!hasGame && genInProgress && (
+              <div className="absolute top-2 right-2 bg-sky-500/90 px-2 py-1 rounded-lg text-xs text-white">
+                ⚙️ 生成中
+              </div>
+            )}
+            {!hasGame && !genInProgress && (
+              <div className="absolute top-2 right-2 bg-black/50 backdrop-blur-sm px-2 py-1 rounded-lg text-xs text-white">
+                待解锁
               </div>
             )}
           </div>
@@ -82,7 +259,7 @@ export default function DungeonDetail() {
                 <p className="text-slate-500 mt-1">{book.author}</p>
               </div>
 
-              {/* NPC 对话按钮（仅已完成） */}
+              {/* NPC 对话按钮（仅已完成且有 NPC） */}
               {isCompleted && npc && (
                 <button
                   onClick={() => navigate(`/npc/${npc.id}`)}
@@ -134,23 +311,38 @@ export default function DungeonDetail() {
               </div>
             </div>
 
-            {/* 🎮 游戏入口按钮 */}
-            {gameStatus === 'done' ? (
-              <div className="mt-6 flex items-center gap-2 text-emerald-600 font-medium text-sm">
-                <span className="text-xl">🏆</span>
-                <span>沉浸体验已完成 — 你可以回顾知识或与 NPC 对话</span>
+            {/* 🎮 游戏入口 / 生成进度 / 生成入口 */}
+            {hasGame ? (
+              <button
+                onClick={() => navigate(`/book/${bookId}/game`)}
+                className="mt-6 w-full py-3 rounded-xl font-bold text-base flex items-center justify-center gap-2 transition-all bg-gradient-to-r from-emerald-500 to-teal-600 text-white hover:shadow-lg hover:shadow-emerald-200"
+              >
+                <span className="text-2xl">🎮</span>
+                <span>进入副本</span>
+              </button>
+            ) : genInProgress ? (
+              <div className="mt-6 bg-sky-50 border border-sky-200 rounded-xl p-4">
+                <div className="flex items-center gap-2 text-sky-700 font-medium text-sm">
+                  <span className="inline-block w-4 h-4 border-2 border-sky-500 border-t-transparent rounded-full animate-spin" />
+                  ⚙️ AI 正在生成沉浸式内容…
+                </div>
+                {generation?.message && (
+                  <p className="text-xs text-sky-600/80 mt-1.5">{generation.message}</p>
+                )}
+                <div className="h-1.5 bg-sky-100 rounded-full overflow-hidden mt-3">
+                  <div className="h-full w-2/3 bg-gradient-to-r from-sky-400 to-violet-500 rounded-full animate-pulse" />
+                </div>
+                <p className="text-[11px] text-sky-400 mt-1.5">
+                  生成完成后会自动出现"进入副本"入口
+                </p>
               </div>
             ) : (
               <button
-                onClick={() => navigate(`/book/${bookId}/game`)}
-                className={`mt-6 w-full py-3 rounded-xl font-bold text-base flex items-center justify-center gap-2 transition-all ${
-                  isInProgress
-                    ? 'bg-gradient-to-r from-violet-500 to-purple-600 text-white hover:shadow-lg hover:shadow-violet-200'
-                    : 'bg-gradient-to-r from-sky-500 to-blue-600 text-white hover:shadow-lg hover:shadow-sky-200 animate-pulse'
-                }`}
+                onClick={openGenModal}
+                className="mt-6 w-full py-3 rounded-xl font-bold text-base flex items-center justify-center gap-2 transition-all bg-gradient-to-r from-sky-500 to-blue-600 text-white hover:shadow-lg hover:shadow-sky-200"
               >
-                <span className="text-2xl">🎮</span>
-                <span>{isInProgress ? '继续沉浸冒险 →' : '开始沉浸式学习 →'}</span>
+                <span className="text-2xl">📜</span>
+                <span>用本书内容生成</span>
               </button>
             )}
           </div>
@@ -182,9 +374,15 @@ export default function DungeonDetail() {
       <div className="bg-white rounded-2xl shadow-sm border border-slate-100 p-6">
         {activeTab === 'chapters' && (
           <div className="space-y-2">
-            {chapterList.map(ch => (
-              <ChapterItem key={ch.index} chapter={ch} isCompleted={isCompleted} />
-            ))}
+            {chapterList.length > 0 ? (
+              chapterList.map(ch => (
+                <ChapterItem key={ch.index ?? ch.title} chapter={ch} isCompleted={isCompleted} />
+              ))
+            ) : (
+              <div className="text-center py-10 text-slate-400">
+                还没有章节内容，生成后自动解锁
+              </div>
+            )}
           </div>
         )}
 
@@ -234,6 +432,188 @@ export default function DungeonDetail() {
           </div>
         )}
       </div>
+
+      {/* 用本书内容生成弹窗 */}
+      {showGenModal && (
+        <div
+          className="fixed inset-0 bg-black/40 backdrop-blur-sm flex items-center justify-center z-50"
+          onClick={() => {
+            if (!isGenTaskRunning) closeGenModal();
+          }}
+        >
+          <div
+            className="bg-white rounded-2xl p-6 w-[520px] shadow-2xl max-h-[90vh] overflow-y-auto"
+            onClick={e => e.stopPropagation()}
+          >
+            {!genTask ? (
+              /* ---------- 表单视图 ---------- */
+              <>
+                <h3 className="text-lg font-bold text-slate-800 mb-4">📜 用本书内容生成副本</h3>
+                <div className="space-y-4">
+                  <div>
+                    <label className="text-sm text-slate-600 mb-1.5 block">书名</label>
+                    <input
+                      type="text"
+                      value={genTitle}
+                      onChange={e => setGenTitle(e.target.value)}
+                      placeholder="输入书名，如《思考，快与慢》"
+                      className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-sky-400 focus:border-transparent"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="text-sm text-slate-600 mb-1.5 block">书籍类型</label>
+                    <select
+                      value={genType}
+                      onChange={e => setGenType(e.target.value)}
+                      className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-sky-400 focus:border-transparent bg-white"
+                    >
+                      <option value="non_fiction">非虚构（认知 / 方法 / 社科）</option>
+                      <option value="fiction">虚构（小说 / 故事）</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="text-sm text-slate-600 mb-1.5 block">书籍正文 / 摘要</label>
+                    <textarea
+                      value={genText}
+                      onChange={e => setGenText(e.target.value)}
+                      placeholder="粘贴本书正文或摘要（至少 100 字）…"
+                      rows={6}
+                      className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-sky-400 focus:border-transparent resize-none"
+                    />
+                    <p className={`text-[11px] mt-1.5 ${genText.trim().length >= 100 ? 'text-emerald-500' : 'text-slate-400'}`}>
+                      已输入 {genText.trim().length} 字（至少 100 字）
+                    </p>
+                  </div>
+
+                  {genFormError && (
+                    <div className="bg-rose-50 border border-rose-200 text-rose-600 rounded-xl px-4 py-2.5 text-sm">
+                      {genFormError}
+                    </div>
+                  )}
+
+                  <div className="flex gap-2 pt-1">
+                    <button
+                      onClick={closeGenModal}
+                      disabled={genSubmitting}
+                      className="flex-1 py-2.5 border border-slate-200 text-slate-600 rounded-xl text-sm font-medium hover:bg-slate-50 disabled:opacity-40"
+                    >
+                      取消
+                    </button>
+                    <button
+                      onClick={handleStartGenerate}
+                      disabled={genSubmitting}
+                      className="flex-1 py-2.5 bg-gradient-to-r from-sky-500 to-violet-500 text-white rounded-xl text-sm font-medium hover:shadow-lg disabled:opacity-60 disabled:cursor-not-allowed transition-all"
+                    >
+                      {genSubmitting ? '提交中…' : '开始生成'}
+                    </button>
+                  </div>
+                </div>
+              </>
+            ) : (
+              /* ---------- 生成进度视图 ---------- */
+              <>
+                <h3 className="text-lg font-bold text-slate-800 mb-1">⚙️ 副本生成中</h3>
+                <p className="text-sm text-slate-400 mb-5">
+                  AI 正在把《{genTitle.trim() || '本书'}》拆解为章节概念并编织沉浸式场景
+                </p>
+
+                {!genTaskState && !genTaskError && (
+                  <div className="text-center py-6 text-slate-400 text-sm">
+                    <div className="text-3xl mb-2 animate-pulse">🧙</div>
+                    任务已提交，等待开始…
+                  </div>
+                )}
+
+                {genTaskState && genTaskState.status !== 'failed' && (
+                  <>
+                    {/* 总进度 */}
+                    <div className="mb-5">
+                      <div className="flex justify-between text-xs text-slate-500 mb-1.5">
+                        <span className="font-medium">
+                          {genTaskState.status === 'success'
+                            ? '✅ 全部完成'
+                            : genTaskState.status === 'running'
+                              ? '🏃 生成进行中'
+                              : '⏳ 排队中'}
+                        </span>
+                        <span>{genTaskState.progress ?? 0}%</span>
+                      </div>
+                      <div className="h-2.5 bg-slate-100 rounded-full overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-gradient-to-r from-sky-400 to-violet-500 transition-all duration-500"
+                          style={{ width: `${genTaskState.progress ?? 0}%` }}
+                        />
+                      </div>
+                      {genTaskState.message && (
+                        <p className="text-xs text-slate-400 mt-1.5">{genTaskState.message}</p>
+                      )}
+                    </div>
+
+                    {/* 各 Agent 阶段 */}
+                    {Array.isArray(genTaskState.stages) && genTaskState.stages.length > 0 && (
+                      <div className="space-y-2.5">
+                        {genTaskState.stages.map((stage, i) => (
+                          <div
+                            key={stage.agent ?? i}
+                            className="flex items-start gap-3 bg-slate-50 rounded-xl p-3"
+                          >
+                            <span
+                              className={`mt-0.5 w-2.5 h-2.5 rounded-full shrink-0 ${STAGE_COLOR[stage.status] || 'bg-slate-200'}`}
+                            />
+                            <div className="flex-1 min-w-0">
+                              <div className="flex justify-between text-xs mb-1">
+                                <span className="font-semibold text-slate-700 capitalize">
+                                  {stage.agent}
+                                </span>
+                                <span className="text-slate-400">
+                                  {STAGE_LABEL[stage.status] || stage.status} · {stage.progress ?? 0}%
+                                </span>
+                              </div>
+                              {stage.progress > 0 && (
+                                <div className="h-1 bg-slate-200 rounded-full overflow-hidden mb-1">
+                                  <div
+                                    className="h-full bg-sky-500 rounded-full transition-all duration-500"
+                                    style={{ width: `${stage.progress ?? 0}%` }}
+                                  />
+                                </div>
+                              )}
+                              {stage.message && (
+                                <p className="text-[11px] text-slate-400 leading-relaxed">
+                                  {stage.message}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {genTaskError && (
+                  <div className="bg-rose-50 border border-rose-200 text-rose-600 rounded-xl px-4 py-3 text-sm mb-4">
+                    <div className="font-medium mb-1">生成失败</div>
+                    <p className="text-rose-500">{genTaskError}</p>
+                  </div>
+                )}
+
+                {!isGenTaskRunning && (
+                  <div className="flex gap-2 pt-2">
+                    <button
+                      onClick={closeGenModal}
+                      className="flex-1 py-2.5 border border-slate-200 text-slate-600 rounded-xl text-sm font-medium hover:bg-slate-50"
+                    >
+                      关闭
+                    </button>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

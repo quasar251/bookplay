@@ -184,6 +184,15 @@ class GenerateRequest(BaseModel):
     book_type: str = Field("non_fiction", description="书籍类型：non_fiction / fiction")
 
 
+class BookGenerateRequest(BaseModel):
+    """书库"注册新书 / 生成内容"请求体"""
+
+    book_title: str = Field(..., min_length=1, description="书名（注册新书必填）")
+    book_text: str = Field(..., min_length=100, description="书籍全文或摘要（至少 100 字）")
+    book_type: str = Field("non_fiction", description="书籍类型：non_fiction / fiction")
+    max_scenes: int = Field(3, ge=1, le=5, description="最多生成场景数（控制成本）")
+
+
 class GenerateResponse(BaseModel):
     """生成游戏内容响应体"""
 
@@ -244,4 +253,39 @@ class TaskListResponse(BaseModel):
 
     total: int = Field(0, description="任务总数")
     tasks: List[Task] = Field(default_factory=list, description="任务列表")
+
+
+# ============================================================
+# 六、NPC 对话 + RAG（对应 PRD4 第 3 章）
+# ============================================================
+
+
+class BookChunkIn(BaseModel):
+    """待导入的分块（原文分块，用于向量检索）"""
+
+    chunk_index: int = Field(..., description="分块序号")
+    text: str = Field(..., description="原文内容")
+    chapter: Optional[str] = Field(None, description="所属章节")
+
+
+class IngestChunksRequest(BaseModel):
+    """导入书籍分块请求体"""
+
+    book_id: str = Field(..., description="书籍标识")
+    chunks: List[BookChunkIn] = Field(..., description="分块列表（至少 1 个）")
+
+
+class NpcChatRequest(BaseModel):
+    """NPC 对话请求体"""
+
+    message: str = Field(..., min_length=1, description="玩家输入")
+    book_id: str = Field(..., description="书籍标识（RAG 检索范围）")
+    npc_id: Optional[str] = Field(None, description="NPC 标识（对应书库 NPC 档案，推荐）")
+    npc_name: str = Field("默认导师", description="NPC 名称（决定灵魂档案；无 npc_id 时使用）")
+    top_k: int = Field(3, ge=1, le=10, description="检索数量")
+    min_score: float = Field(0.0, ge=0.0, le=1.0, description="相似度阈值")
+    allow_free_talk: bool = Field(
+        False,
+        description="检索不到原文时是否允许 NPC 以人设知识自由作答（引用为空）",
+    )
 
