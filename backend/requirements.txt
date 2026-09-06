@@ -4,3 +4,12 @@ openai==1.60.0
 pydantic==2.9.2
 python-dotenv==1.0.1
 httpx==0.28.0
+
+# LangChain（Phase 2a）
+langchain==0.3.30
+langchain-core==0.3.86
+langchain-openai==0.2.14
+
+# LangGraph（Phase 2b）
+langgraph==0.3.34
+langgraph-checkpoint==2.1.2

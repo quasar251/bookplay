@@ -3,18 +3,17 @@
 定义所有 Agent 的统一接口，支持：
 - 注册/注销机制（通过 Registry）
 - 输入输出数据模型校验（Pydantic）
-- 重试与超时控制
-- 结构化输出解析
+- 重试与超时控制（由 LLMClient 内部的 LangChain/OpenAI 层负责）
+- 结构化输出解析（PydanticOutputParser）
 """
 
 import json
 from abc import ABC, abstractmethod
 from typing import Any, Dict, Optional, Type
 
-from openai import AsyncOpenAI
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
-from config.settings import settings
+from llm.client import LLMClient, LLMClientError, get_llm_client
 from models.schemas import AgentMeta, AgentResult
 
 
@@ -30,10 +29,8 @@ class BaseAgent(ABC):
     description: str = "基础 Agent 模板"
 
     def __init__(self) -> None:
-        self._client = AsyncOpenAI(
-            api_key=settings.OPENAI_API_KEY,
-            base_url=settings.OPENAI_BASE_URL,
-        )
+        # 统一走 LCEL 封装（LangChain ChatOpenAI）
+        self._llm: LLMClient = get_llm_client()
 
     # ============================================================
     # 对外接口
@@ -93,7 +90,9 @@ class BaseAgent(ABC):
         user_prompt: str,
         response_model: Optional[Type[BaseModel]] = None,
     ) -> Dict[str, Any]:
-        """调用 LLM API（统一入口，含重试）
+        """调用 LLM API（统一入口，走 LCEL 封装）
+
+        重试与超时由 LLMClient（OpenAI SDK max_retries）控制。
 
         Args:
             system_prompt: 系统提示词
@@ -101,61 +100,30 @@ class BaseAgent(ABC):
             response_model: Pydantic 模型，用于结构化输出解析
 
         Returns:
-            解析后的结果字典。如果指定了 response_model 且解析成功，
-            返回该模型的 dict 形式；解析失败或未指定时，
-            返回 {"raw": content} 或直接解析出的 JSON dict。
+            解析后的结果字典。约定：
+            - 成功：返回数据 dict（可能是模型的 model_dump()）
+            - 非结构化输出且非法 JSON：返回 {"raw": content}
+            - 重试耗尽/解析失败：返回 {"success": False, "error": ...}
         """
-        last_error: Optional[str] = None
+        try:
+            if response_model is not None:
+                return await self._llm.invoke_structured(
+                    system_prompt, user_prompt, response_model,
+                )
 
-        for attempt in range(1, settings.AGENT_RETRY_COUNT + 1):
+            # 非结构化输出：先拿文本，尝试解析为 JSON
+            text = await self._llm.invoke_text(system_prompt, user_prompt)
             try:
-                kwargs: Dict[str, Any] = {
-                    "model": settings.MODEL_NAME,
-                    "messages": [
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_prompt},
-                    ],
-                    "max_tokens": settings.MAX_TOKENS,
-                    "temperature": 0.7,
-                }
+                return json.loads(text)
+            except json.JSONDecodeError:
+                return {"raw": text}
 
-                if response_model:
-                    kwargs["response_format"] = {"type": "json_object"}
-
-                response = await self._client.chat.completions.create(**kwargs)
-
-                content = response.choices[0].message.content
-                if not content:
-                    raise ValueError("Empty LLM response")
-
-                # 如果指定了 Pydantic 模型，尝试结构化解析
-                if response_model:
-                    try:
-                        data = json.loads(content)
-                        parsed = response_model(**data)
-                        return parsed.model_dump()
-                    except (json.JSONDecodeError, ValidationError):
-                        # 解析失败则返回原始文本供上层处理
-                        return {"raw": content}
-
-                # 非结构化输出，尝试 JSON 解析
-                try:
-                    return json.loads(content)
-                except json.JSONDecodeError:
-                    return {"raw": content}
-
-            except Exception as e:
-                last_error = str(e)
-                print(f"[{self.name}] Attempt {attempt}/{settings.AGENT_RETRY_COUNT} failed: {e}")
-                if attempt < settings.AGENT_RETRY_COUNT:
-                    continue  # 简单指数退避可后续扩展
-
-        # 所有重试耗尽
-        return {
-            "success": False,
-            "result": None,
-            "error": f"All {settings.AGENT_RETRY_COUNT} attempts failed. Last error: {last_error}",
-        }
+        except LLMClientError as e:
+            return {
+                "success": False,
+                "result": None,
+                "error": str(e),
+            }
 
     def to_dict(self) -> Dict[str, Any]:
         """Agent 元信息序列化（用于 Registry 注册）"""

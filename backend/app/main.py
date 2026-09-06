@@ -3,33 +3,43 @@
 提供 HTTP API，对外暴露：
 - GET  /api/health     - 健康检查
 - GET  /api/agents     - 查看已注册的 Agent 列表
-- POST /api/generate   - 为书籍生成游戏内容骨架（调用 Orchestrator）
+- POST /api/generate   - 提交生成任务（异步，立即返回 task_id）
+- GET  /api/tasks      - 任务列表
+- GET  /api/tasks/{id} - 任务详情/进度
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 
+from api.tasks import router as tasks_router
 from agents.registry import Registry
-from core.orchestrator import Orchestrator, OrchestratorError
+from core.executor import TaskExecutor
+from core.orchestrator import Orchestrator
+from core.task_manager import get_task_manager
 from models.schemas import (
     GenerateRequest,
     GenerateResponse,
     HealthResponse,
 )
 
-# 全局单例：注册中心 + 编排器
+# 全局单例
 _registry = Registry()
 _orchestrator = Orchestrator(_registry)
+_task_manager = get_task_manager()
+_executor = TaskExecutor(_orchestrator, _task_manager)
 
 
 app = FastAPI(
     title="BookPlay Agent System",
     description=(
         "沉浸式知识引擎的 Agent 编排系统。\n\n"
-        "Phase 0：可插拔框架 + 顺序编排器。\n"
+        "Phase 1：可插拔框架 + 顺序编排器 + 异步任务。\n"
         "未来演进：LangChain LCEL → LangGraph StateGraph。"
     ),
-    version="0.1.0",
+    version="0.2.0",
 )
+
+# 注册路由
+app.include_router(tasks_router)
 
 
 @app.get("/api/health", response_model=HealthResponse)
@@ -51,37 +61,33 @@ async def list_agents() -> dict:
 
 @app.post("/api/generate", response_model=GenerateResponse)
 async def generate_game_content(body: GenerateRequest) -> GenerateResponse:
-    """为指定书籍生成游戏内容骨架
+    """提交书籍游戏内容生成任务（异步）
+
+    立即返回 task_id，后台执行。通过 GET /api/tasks/{task_id} 查询进度。
 
     Args:
         body: 生成请求，包含 book_text（书籍文本）、可选的 book_title 和 book_type
 
     Returns:
-        GenerateResponse: 统一响应格式，data 中包含 stages 和 final_result
+        GenerateResponse: data 中包含 task_id
     """
-    try:
-        result = await _orchestrator.run({
-            "book_text": body.book_text,
-            "book_title": body.book_title or "",
-            "book_type": body.book_type,
-        })
+    import time
 
-        return GenerateResponse(
-            code=0,
-            message="success",
-            data={
-                "success": result.success,
-                "stages": [s.model_dump() for s in result.stages],
-                "final_result": result.final_result,
-            },
-            metadata={
-                "execution_log": result.execution_log,
-                "total_time_seconds": result.total_time_seconds,
-            },
-        )
+    task_id = _executor.submit_generate(
+        book_text=body.book_text,
+        book_title=body.book_title or "",
+        book_type=body.book_type,
+    )
 
-    except OrchestratorError as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Internal error: {e}")
+    return GenerateResponse(
+        code=0,
+        message="task_submitted",
+        data={
+            "task_id": task_id,
+            "status": "pending",
+        },
+        metadata={
+            "polling_url": f"/api/tasks/{task_id}",
+        },
+        timestamp=int(time.time()),
+    )

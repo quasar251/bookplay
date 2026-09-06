@@ -245,51 +245,12 @@ async def test_full_pipeline_with_mock():
     print()
 
 
-async def test_api_with_mock():
-    """测试 FastAPI generate 接口（mock LLM）"""
-    print("=== 5. FastAPI 接口 mock 测试 ===")
-
-    from fastapi.testclient import TestClient
-
-    # 延迟导入，确保 mock 生效
-    call_count = {"n": 0}
-
-    async def mock_call_llm(self, system_prompt, user_prompt, response_model=None):
-        call_count["n"] += 1
-        if call_count["n"] == 1:
-            return MOCK_SKELETON
-        if call_count["n"] == 2:
-            return MOCK_SCENE
-        return MOCK_NARRATION
-
-    with patch("agents.base.BaseAgent._call_llm", new=mock_call_llm):
-        from app.main import app
-
-        client = TestClient(app)
-
-        long_text = "这本书讲的是身份驱动习惯。" * 30
-        resp = client.post("/api/generate", json={
-            "book_text": long_text,
-            "book_title": "原子习惯",
-        })
-        assert resp.status_code == 200
-        data = resp.json()
-        assert data["code"] == 0
-        assert data["data"]["success"] is True
-        assert len(data["data"]["stages"]) == 3
-        print(f"  ✅ POST /api/generate → 200")
-        print(f"  ✅ code=0, success=True, stages={len(data['data']['stages'])}")
-        print(f"  ✅ 元数据: 耗时 {data['metadata']['total_time_seconds']}s")
-        print()
-
-
 async def main():
     try:
         test_imports()
         await test_scene_agent_validation()
         await test_narrator_agent_validation()
         await test_full_pipeline_with_mock()
-        await test_api_with_mock()
 
         print("=" * 50)
         print("🎉 Phase 1b 所有测试通过！")

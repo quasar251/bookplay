@@ -201,3 +201,47 @@ class HealthResponse(BaseModel):
     agents_count: int = Field(0, description="已注册 Agent 数量")
     available_agents: List[str] = Field(default_factory=list, description="可用 Agent 名称列表")
     timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ============================================================
+# 五、异步任务
+# ============================================================
+
+
+class TaskStage(BaseModel):
+    """任务单个阶段的进度"""
+
+    stage: int = Field(..., description="阶段序号")
+    agent: str = Field(..., description="Agent 名称")
+    status: str = Field("pending", description="状态: pending / running / completed / failed")
+    progress: int = Field(0, description="该阶段进度 0-100")
+    message: Optional[str] = Field(None, description="阶段描述或错误信息")
+
+
+class Task(BaseModel):
+    """异步任务 —— 对应 PRD4 第七章的任务表
+
+    状态机: pending → running → success
+                      ↘ failed
+    """
+
+    task_id: str = Field(..., description="任务唯一 ID")
+    task_type: str = Field("generate", description="任务类型：generate / npc_chat / ...")
+    status: str = Field("pending", description="任务状态：pending / running / success / failed")
+    progress: int = Field(0, description="整体进度 0-100")
+    message: str = Field("", description="当前阶段描述")
+    stages: List[TaskStage] = Field(default_factory=list, description="各阶段详情")
+    result: Optional[Dict[str, Any]] = Field(None, description="任务结果（成功时填充）")
+    error: Optional[str] = Field(None, description="错误信息（失败时填充）")
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    started_at: Optional[datetime] = Field(None)
+    finished_at: Optional[datetime] = Field(None)
+    total_time_seconds: float = Field(0.0, description="总耗时")
+
+
+class TaskListResponse(BaseModel):
+    """任务列表响应"""
+
+    total: int = Field(0, description="任务总数")
+    tasks: List[Task] = Field(default_factory=list, description="任务列表")
+
