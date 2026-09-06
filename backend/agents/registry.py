@@ -30,11 +30,21 @@ class Registry:
         self._auto_register()
 
     def _auto_register(self) -> None:
-        """自动注册内置 Agent（Phase 0）"""
+        """自动注册内置 Agent（Phase 1：三阶段管道）
+
+        注册顺序即执行顺序：
+            extract → scene → narrator
+        """
         # 延迟导入避免循环依赖
-        from agents.extract import ExtractAgent  # noqa: F811
-        
-        instances: List[BaseAgent] = [ExtractAgent()]
+        from agents.extract import ExtractAgent
+        from agents.scene import SceneAgent
+        from agents.narrator import NarratorAgent
+
+        instances: List[BaseAgent] = [
+            ExtractAgent(),
+            SceneAgent(),
+            NarratorAgent(),
+        ]
         for instance in instances:
             self.register(instance)
 

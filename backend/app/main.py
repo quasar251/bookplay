@@ -1,16 +1,20 @@
 """BookPlay Agent 系统 — FastAPI 入口
 
 提供 HTTP API，对外暴露：
-- GET /api/agents       - 查看已注册的 Agent 列表
+- GET  /api/health     - 健康检查
+- GET  /api/agents     - 查看已注册的 Agent 列表
 - POST /api/generate   - 为书籍生成游戏内容骨架（调用 Orchestrator）
 """
-
-from typing import Any, Dict
 
 from fastapi import FastAPI, HTTPException
 
 from agents.registry import Registry
 from core.orchestrator import Orchestrator, OrchestratorError
+from models.schemas import (
+    GenerateRequest,
+    GenerateResponse,
+    HealthResponse,
+)
 
 # 全局单例：注册中心 + 编排器
 _registry = Registry()
@@ -28,58 +32,53 @@ app = FastAPI(
 )
 
 
-@app.get("/api/health")
-async def health_check() -> Dict[str, Any]:
+@app.get("/api/health", response_model=HealthResponse)
+async def health_check() -> HealthResponse:
     """健康检查"""
-    return {
-        "status": "ok",
-        "agents_count": len(_registry.list_agents()),
-        "available_agents": [a["name"] for a in _registry.list_agents()],
-    }
+    return HealthResponse(
+        status="ok",
+        agents_count=len(_registry.list_agents()),
+        available_agents=[a["name"] for a in _registry.list_agents()],
+    )
 
 
 @app.get("/api/agents")
-async def list_agents() -> Dict[str, Any]:
+async def list_agents() -> dict:
     """列出所有已注册的 Agent"""
     agents = _registry.list_agents()
     return {"count": len(agents), "agents": agents}
 
 
-@app.post("/api/generate")
-async def generate_game_content(body: Dict[str, Any]) -> Dict[str, Any]:
+@app.post("/api/generate", response_model=GenerateResponse)
+async def generate_game_content(body: GenerateRequest) -> GenerateResponse:
     """为指定书籍生成游戏内容骨架
 
-    请求体：
-        book_text (str): 书籍全文或摘要（建议至少 100 字）
+    Args:
+        body: 生成请求，包含 book_text（书籍文本）、可选的 book_title 和 book_type
 
-    返回：
-        { code, message, data: {...}, timestamp }
+    Returns:
+        GenerateResponse: 统一响应格式，data 中包含 stages 和 final_result
     """
-    book_text = body.get("book_text", "")
-    
-    if not book_text or len(book_text.strip()) < 100:
-        raise HTTPException(
-            status_code=400,
-            detail="book_text is required and must be at least 100 characters",
-        )
-
     try:
-        result = await _orchestrator.run({"book_text": book_text})
-        
-        return {
-            "code": 0,
-            "message": "success",
-            "data": {
-                "success": result["success"],
-                "stages": result["stages"],
-                "final_result": result["final_result"],
+        result = await _orchestrator.run({
+            "book_text": body.book_text,
+            "book_title": body.book_title or "",
+            "book_type": body.book_type,
+        })
+
+        return GenerateResponse(
+            code=0,
+            message="success",
+            data={
+                "success": result.success,
+                "stages": [s.model_dump() for s in result.stages],
+                "final_result": result.final_result,
             },
-            "metadata": {
-                "execution_log": _orchestrator.log,
-                "total_time_seconds": result["total_time_seconds"],
+            metadata={
+                "execution_log": result.execution_log,
+                "total_time_seconds": result.total_time_seconds,
             },
-            "timestamp": 0,
-        }
+        )
 
     except OrchestratorError as e:
         raise HTTPException(status_code=500, detail=str(e))
