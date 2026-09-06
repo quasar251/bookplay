@@ -79,6 +79,10 @@ ECharts 驱动的力导向图，展示你学到的概念之间的关联，让知
 | **路由管理** | React Router DOM v7 |
 | **图表可视化** | ECharts |
 | **开发语言** | JavaScript (JSX) |
+| **后端框架** | FastAPI (Python) |
+| **Agent 编排** | LangChain / LangGraph + DeepSeek LLM |
+| **向量检索** | ChromaDB（NPC 对话 RAG 引用原文） |
+| **部署** | Docker Compose（Nginx + Uvicorn） |
 
 ### 页面清单
 
@@ -111,19 +115,43 @@ frontend/
 
 ## 🚀 快速开始
 
+### 0. 配置环境变量（后端需要真实 LLM）
+
 ```bash
-# 安装依赖
+cd backend
+copy .env.example .env        # 并编辑 .env，填入你的 DeepSeek API Key
+```
+
+### 1. 启动后端（FastAPI + 种子语料自动入库）
+
+```bash
+cd backend
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8000
+```
+
+启动时 lifespan 会自动把 `data/seed.json` 种子语料写入向量库（首次约几十秒）。
+
+### 2. 启动前端（Vite dev server 代理 `/api` → `127.0.0.1:8000`）
+
+```bash
 cd frontend
 npm install
-
-# 启动开发服务器
 npm run dev
-
-# 构建生产版本
-npm run build
 ```
 
 打开 http://localhost:5173 即可浏览。
+
+### 3. 一键部署（Docker Compose）
+
+```bash
+docker compose up --build -d
+```
+
+- 前端（Nginx 静态托管 + `/api` 反代）：http://localhost:3000
+- 后端（FastAPI）：http://localhost:8000/docs
+
+> 端口冲突：若 8000 已被本地开发后端占用，请先停止再执行部署。
 
 ---
 
@@ -161,9 +189,12 @@ npm run build
 ## 🧭 路线图
 
 - [x] MVP 第一版 — 纯前端 + Mock 数据
-- [ ] Phase 2 — 后端 API（FastAPI + SQLite）
-- [ ] Phase 3 — LLM 生成书籍→游戏内容
-- [ ] Phase 4 — 用户体系 + 多端同步
+- [x] 后端 API — FastAPI + Catalog 数据层（种子书籍 / 章节 / 摘录 / NPC / 知识图谱 / 个人中心）
+- [x] LLM 生成 — DeepSeek Agent：注册任意书籍 → 提取概念 → 生成“学-练-用”游戏内容并回写
+- [x] NPC 会话 — 意图识别（BOOK / FREE_TALK / OUT_OF_SCOPE）+ RAG 引用原文
+- [x] 前端真实接入 — 全部核心页面调用真实接口（大厅 / 书详情 / 沉浸游戏 / NPC / 群组讨论 / 星图 / 个人中心）
+- [x] Docker Compose 部署 — Nginx + FastAPI 一键起服
+- [ ] 用户体系 — 账号 / 云端进度同步（规划中）
 
 ---
 

@@ -1,0 +1,27 @@
+# BookPlay 一键部署（Docker Compose）
+# 用法：
+#   1. 复制 backend/.env.example 为 backend/.env 并填入 DeepSeek API Key
+#   2. docker compose up --build -d
+#   3. 访问 http://localhost:3000
+#
+# 服务：
+#   - frontend: Vite 构建产物 + Nginx（静态资源 + /api 反向代理）
+#   - backend : FastAPI（lifespan 启动时自动导入 seed 语料到向量库）
+services:
+  backend:
+    build: ./backend
+    container_name: bookplay-backend
+    env_file:
+      - ./backend/.env
+    ports:
+      - "8000:8000"
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    container_name: bookplay-frontend
+    depends_on:
+      - backend
+    ports:
+      - "3000:80"
+    restart: unless-stopped
